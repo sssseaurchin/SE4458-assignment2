@@ -33,12 +33,15 @@
   padding: 10px 15px;
   border-radius: 20px;
   max-width: 80%;
+  white-space: pre-wrap;
   word-wrap: break-word;
 }
 
+
+
 /* User message style */
 .message.user {
-  background-color: #007bff;
+  background-color: #428e39;
   color: white;
   align-self: flex-end;
 }
@@ -68,11 +71,11 @@ button {
   padding: 10px 20px;
   border: none;
   border-radius: 20px;
-  background-color: #007bff;
+  background-color: #428e39;
   color: white;
   cursor: pointer;
 }
 
 button:hover {
-  background-color: #0056b3;
+  background-color: #109f40;
 }

@@ -35,6 +35,16 @@ async function loginAndGetToken() {
     }
 }
 
+function formatDetailedBill(billList) {
+    if (!Array.isArray(billList) || billList.length === 0) {
+        return "No detailed bill records found.";
+    }
+
+    return billList.map(bill => {
+        return `${bill.month}/${bill.year} - ${bill.totalCallMinutes} mins, ${bill.totalInternetMB}MB, $${bill.amount}, Paid: ${bill.paid ? 'T' : 'F'}`;
+    }).join('\n');
+}
+
 
 app.post('/chat', async (req, res) => {
     const { message } = req.body;
@@ -66,7 +76,7 @@ Your job is to return ONLY a valid JSON object with this structure:
   - For "makePayment", include amount if available.
   - For "queryBillDetailed", include subscriberId, page, and size.
 - Always include a user_response message string.
-- subscriberId should be 123 if not specified by user.
+- subscriberId should be 1 if not specified by user.
 
 Return JSON only. DO NOT explain. DO NOT include anything outside the JSON. DO NOT include markdown, code fences, or extra text. Stop immediately after closing the JSON.`;
 
@@ -78,7 +88,6 @@ Return JSON only. DO NOT explain. DO NOT include anything outside the JSON. DO N
 
         console.log('Request body sent to AI:', requestPayload);
 
-        // Ensure the AI service is reachable and responding
         const aiRes = await axios.post('http://127.0.0.1:11434/api/generate', requestPayload, {
             headers: {
                 'Content-Type': 'application/json',
@@ -87,7 +96,6 @@ Return JSON only. DO NOT explain. DO NOT include anything outside the JSON. DO N
 
         console.log('Received response from AI service:', aiRes.data);
 
-        // Check if the AI service responded with valid JSON and parse it
         const text = aiRes.data.response;
         let parsed;
 
@@ -102,7 +110,7 @@ Return JSON only. DO NOT explain. DO NOT include anything outside the JSON. DO N
 
         const intent = parsed.intent?.toLowerCase();
         const parameters = parsed.parameters || {};
-        const subscriberId = parseInt(parameters.subscriberId);
+        const subscriberId = parseInt(parameters.subscriberId) || 1;
         const userResponse = parsed.user_response || "Sorry, I couldn't process that.";
         const year = parseInt(parameters.year);
         const month = parseInt(parameters.month);
@@ -110,49 +118,67 @@ Return JSON only. DO NOT explain. DO NOT include anything outside the JSON. DO N
         const page = parameters.page || 0;
         const size = parameters.size || 10;
 
+        if (intent === 'makepayment' && isNaN(amount)) {
+            return res.status(400).send({ error: 'Amount is required for makePayment intent.' });
+        }
+
         let apiResponse = 'Unknown intent.';
 
         if (intent === 'querybill') {
-            const resp = await axios.get(`${process.env.SPRING_API_BASE}/bill/query/${subscriberId}/${year}/${month}`);
-            apiResponse = resp.data;
+            try {
+                const resp = await axios.get(`${process.env.SPRING_API_BASE}/bill/query/${subscriberId}/${year}/${month}`);
+                apiResponse = resp.data;
+            } catch (apiError) {
+                console.error('API Request failed:', apiError.response ? apiError.response.data : apiError.message);
+                return res.status(500).send({ error: 'API request failed.' });
+            }
         } else if (intent === 'calculatebill') {
-            const resp = await axios.post(`${process.env.SPRING_API_BASE}/bill/calculate`, {
-                subscriberId,
-                year,
-                month,
-            });
-            apiResponse = resp.data;
+            try {
+                const resp = await axios.post(`${process.env.SPRING_API_BASE}/bill/calculate`, {
+                    subscriberId,
+                    year,
+                    month,
+                });
+                apiResponse = resp.data;
+            } catch (apiError) {
+                console.error('API Request failed:', apiError.response ? apiError.response.data : apiError.message);
+                return res.status(500).send({ error: 'API request failed.' });
+            }
         } else if (intent === 'makepayment') {
             apiResponse = 'Payment request prepared.'; // DEBUG
-            const amount = parseFloat(parameters.amount);
-
-            if (isNaN(amount)) {
-                throw new Error('Amount is required for makePayment intent.');
+            try {
+                const resp = await axios.post(
+                    `${process.env.SPRING_API_BASE}/bill/pay`,
+                    null,
+                    {
+                        params: {
+                            subscriberId,
+                            year,
+                            month,
+                            amount,
+                        },
+                    }
+                );
+                apiResponse = resp.data;
+            } catch (apiError) {
+                console.error('API Request failed:', apiError.response ? apiError.response.data : apiError.message);
+                return res.status(500).send({ error: 'API request failed.' });
             }
-
-            const resp = await axios.post(
-                `${process.env.SPRING_API_BASE}/bill/pay`,
-                null,
-                {
-                    params: {
-                        subscriberId,
-                        year,
-                        month,
-                        amount,
-                    },
-                }
-            );
-            apiResponse = resp.data;
         } else if (intent === 'querybilldetailed') {
-            const resp = await axios.get(
-                `${process.env.SPRING_API_BASE}/bill/query/detailed/${subscriberId}?page=${page}&size=${size}`,
-                {
-                    headers: {
-                        Authorization: `Bearer ${jwtToken}`,
-                    },
-                }
-            );
-            apiResponse = resp.data;
+            try {
+                const resp = await axios.get(
+                    `${process.env.SPRING_API_BASE}/bill/query/detailed/${subscriberId}?page=${page}&size=${size}`,
+                    {
+                        headers: {
+                            Authorization: `Bearer ${jwtToken}`,
+                        },
+                    }
+                );
+                apiResponse = resp.data;
+            } catch (apiError) {
+                console.error('API Request failed:', apiError.response ? apiError.response.data : apiError.message);
+                return res.status(500).send({ error: 'API request failed.' });
+            }
         }
 
         console.log('Final API response:', apiResponse);
@@ -164,10 +190,21 @@ Return JSON only. DO NOT explain. DO NOT include anything outside the JSON. DO N
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
         });
 
+        let finalResponse = userResponse;
+
+        if (intent === 'querybilldetailed') {
+            finalResponse += '\n\n' + formatDetailedBill(apiResponse);
+        } else if (intent === 'querybill') {
+            finalResponse += `\n\nTotal $${apiResponse.amount}, Paid: ${apiResponse.paid ? 'T' : 'F'}`;
+        } else if (intent === 'makepayment') {
+            finalResponse += `\n\nPayment completed: $${amount} for ${month}/${year}`;
+        }
+
         res.send({
             success: true,
-            response: userResponse
+            response: finalResponse
         });
+
 
     } catch (error) {
         console.error('Error in /chat:', error.message || error);
